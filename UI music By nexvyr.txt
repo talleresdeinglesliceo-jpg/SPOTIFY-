@@ -1,0 +1,1889 @@
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local SoundService = game:GetService("SoundService")
+local HttpService = game:GetService("HttpService")
+local ContentProvider = game:GetService("ContentProvider")
+
+local LocalPlayer = Players.LocalPlayer
+
+local env = (getgenv and getgenv()) or _G
+if type(env.NexvyrMusicCleanup) == "function" then
+	pcall(env.NexvyrMusicCleanup)
+end
+
+local CONFIG = {
+	SaveFile = "NexvyrHub_Music.json",
+	DefaultVolume = 0.5,
+	VolumeStep = 0.1,
+	WindowSize = Vector2.new(300, 560),
+	DefaultArtist = "7.dui",
+	FloatSize = 58,
+	MinScale = 0.55,
+	MaxScale = 1.5,
+	TapSlop = 10,
+	Follow = 26,
+
+	CoverImage = 85783576220048,
+	FloatImage = 137318104035971,
+}
+
+local Tracks = {
+	{ Title = "Tokio", Id = 110398343528156 },
+	{ Title = "Where are you now", Id = 101942928369299 },
+	{ Title = "Fever bunny", Id = 121033631660779 },
+	{ Title = "Legacy", Id = 71903700933695 },
+	{ Title = "Honeypie", Id = 71577571066468 },
+	{ Title = "Kiss me again", Id = 136303346026290 },
+}
+
+local COLORS = {
+	Bg = Color3.fromRGB(18, 18, 18),
+	Bar = Color3.fromRGB(12, 12, 12),
+	Card = Color3.fromRGB(28, 28, 28),
+	Row = Color3.fromRGB(18, 18, 18),
+	ActiveRow = Color3.fromRGB(24, 44, 34),
+	PressRow = Color3.fromRGB(42, 42, 42),
+	Field = Color3.fromRGB(40, 40, 40),
+	Stroke = Color3.fromRGB(46, 46, 46),
+	Border = Color3.fromRGB(62, 62, 62),
+	Track = Color3.fromRGB(83, 83, 83),
+	Text = Color3.fromRGB(255, 255, 255),
+	SubText = Color3.fromRGB(179, 179, 179),
+	Accent = Color3.fromRGB(30, 215, 96),
+	Danger = Color3.fromRGB(235, 87, 87),
+	Neutral1 = Color3.fromRGB(80, 80, 80),
+	Neutral2 = Color3.fromRGB(35, 35, 35),
+}
+
+local MOUSE1, TOUCH = Enum.UserInputType.MouseButton1, Enum.UserInputType.Touch
+
+local conns = {}
+local function Bind(signal, fn)
+	local c = signal:Connect(fn)
+	conns[#conns + 1] = c
+	return c
+end
+
+local function New(class, props, children)
+	local o = Instance.new(class)
+	if props then
+		for k, v in pairs(props) do
+			if k ~= "Parent" then
+				o[k] = v
+			end
+		end
+	end
+	if children then
+		for _, c in ipairs(children) do
+			c.Parent = o
+		end
+	end
+	if props and props.Parent then
+		o.Parent = props.Parent
+	end
+	return o
+end
+
+local function Corner(p, r)
+	return New("UICorner", { CornerRadius = UDim.new(0, r), Parent = p })
+end
+
+local function Stroke(p, color, thickness, transparency)
+	return New("UIStroke", {
+		Color = color,
+		Thickness = thickness,
+		Transparency = transparency or 0,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		Parent = p,
+	})
+end
+
+local function Tween(o, t, props, style, dir)
+	local tw = TweenService:Create(o, TweenInfo.new(t, style or Enum.EasingStyle.Quint, dir or Enum.EasingDirection.Out), props)
+	tw:Play()
+	return tw
+end
+
+local function Label(parent, text, size, color, font, pos, sz, xa)
+	return New("TextLabel", {
+		BackgroundTransparency = 1,
+		Text = text,
+		TextSize = size,
+		TextColor3 = color,
+		Font = font,
+		Position = pos,
+		Size = sz,
+		TextXAlignment = xa or Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = parent,
+	})
+end
+
+local function FormatTime(s)
+	s = math.max(0, math.floor(s or 0))
+	return ("%d:%02d"):format(s // 60, s % 60)
+end
+
+local function IdStr(n)
+	return ("%.0f"):format(n)
+end
+
+local function ToNum(v)
+	if type(v) == "number" then
+		return v
+	end
+	return tonumber(v)
+end
+
+local function CoverColors(track)
+	local key = tostring(track.Title) .. IdStr(track.Id)
+	local h = 0
+	for i = 1, #key do
+		h = (h * 31 + string.byte(key, i)) % 360
+	end
+	local hue = h / 360
+	return Color3.fromHSV(hue, 0.55, 0.85), Color3.fromHSV((hue + 0.08) % 1, 0.7, 0.35)
+end
+
+local Resolved = {}
+local ImageUsers = {}
+
+local function ImageUrl(id)
+	id = ToNum(id)
+	if id and id > 0 then
+		return Resolved[id] or ("rbxthumb://type=Asset&id=" .. IdStr(id) .. "&w=420&h=420")
+	end
+	return ""
+end
+
+local function ResolveTexture(id)
+	local ok, objs = pcall(function()
+		return game:GetObjects("rbxassetid://" .. IdStr(id))
+	end)
+	if ok and type(objs) == "table" and objs[1] then
+		local o = objs[1]
+		local tex
+		if o:IsA("Decal") or o:IsA("Texture") then
+			tex = o.Texture
+		elseif o:IsA("ImageLabel") or o:IsA("ImageButton") then
+			tex = o.Image
+		end
+		pcall(function()
+			o:Destroy()
+		end)
+		if type(tex) == "string" and tex ~= "" then
+			return tex
+		end
+	end
+	return nil
+end
+
+local CanFS = type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
+local Saved = { Volume = CONFIG.DefaultVolume, Scale = 1 }
+if CanFS then
+	pcall(function()
+		if isfile(CONFIG.SaveFile) then
+			local d = HttpService:JSONDecode(readfile(CONFIG.SaveFile))
+			if type(d) == "table" then
+				if type(d.Volume) == "number" then
+					Saved.Volume = math.clamp(d.Volume, 0, 1)
+				end
+				if type(d.Scale) == "number" then
+					Saved.Scale = math.clamp(d.Scale, CONFIG.MinScale, CONFIG.MaxScale)
+				end
+			end
+		end
+	end)
+end
+
+local Volume = Saved.Volume
+local UserScale = Saved.Scale
+
+local function Save()
+	if not CanFS then
+		return
+	end
+	pcall(function()
+		writefile(CONFIG.SaveFile, HttpService:JSONEncode({ Volume = Volume, Scale = UserScale }))
+	end)
+end
+
+local function GetGuiParent()
+	local ok, res = pcall(function()
+		return gethui and gethui()
+	end)
+	if ok and res then
+		return res
+	end
+	local ok2, cg = pcall(function()
+		return game:GetService("CoreGui")
+	end)
+	if ok2 and cg then
+		local probe = Instance.new("Folder")
+		local okp = pcall(function()
+			probe.Parent = cg
+		end)
+		probe:Destroy()
+		if okp then
+			return cg
+		end
+	end
+	return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local Gui = New("ScreenGui", {
+	Name = "NexvyrMusic",
+	ResetOnSpawn = false,
+	IgnoreGuiInset = true,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+	DisplayOrder = 999,
+})
+pcall(function()
+	if syn and syn.protect_gui then
+		syn.protect_gui(Gui)
+	end
+end)
+Gui.Parent = GetGuiParent()
+
+local function ViewSize()
+	local s = Gui.AbsoluteSize
+	if s.X < 10 or s.Y < 10 then
+		local cam = workspace.CurrentCamera
+		return cam and cam.ViewportSize or Vector2.new(800, 600)
+	end
+	return s
+end
+
+local SoundFolder = New("Folder", { Name = "NexvyrMusicSounds", Parent = SoundService })
+local Music = New("Sound", {
+	Name = "NexvyrMusicIdle",
+	Volume = Volume,
+	Looped = false,
+	Parent = SoundFolder,
+})
+
+local function ApplyVolume(v)
+	for _, t in ipairs(Tracks) do
+		if t.Sound then
+			t.Sound.Volume = v
+		end
+	end
+	Music.Volume = v
+end
+
+local function Cleanup()
+	for _, c in ipairs(conns) do
+		pcall(function()
+			c:Disconnect()
+		end)
+	end
+	table.clear(conns)
+	pcall(function()
+		Music:Stop()
+		SoundFolder:Destroy()
+	end)
+	pcall(function()
+		Gui:Destroy()
+	end)
+end
+env.NexvyrMusicCleanup = Cleanup
+
+local function Over(obj)
+	local m = UserInputService:GetMouseLocation()
+	local p, s = obj.AbsolutePosition, obj.AbsoluteSize
+	return m.X >= p.X and m.X <= p.X + s.X and m.Y >= p.Y and m.Y <= p.Y + s.Y
+end
+
+local function OnTap(obj, fn, opts)
+	opts = opts or {}
+	local slop = opts.Slop or CONFIG.TapSlop
+	Bind(obj.InputBegan, function(input)
+		local ut = input.UserInputType
+		if ut ~= MOUSE1 and ut ~= TOUCH then
+			return
+		end
+		local start = Vector2.new(input.Position.X, input.Position.Y)
+		local canvas0 = opts.Canvas and opts.Canvas.CanvasPosition.Y or 0
+		local cancelled, finished, upDone = false, false, false
+		local function up(c)
+			if upDone then
+				return
+			end
+			upDone = true
+			if opts.OnUp then
+				opts.OnUp(c)
+			end
+		end
+		if opts.OnDown then
+			opts.OnDown()
+		end
+		local conn
+		conn = input.Changed:Connect(function()
+			if finished then
+				return
+			end
+			local st = input.UserInputState
+			if st == Enum.UserInputState.End or st == Enum.UserInputState.Cancel then
+				finished = true
+				conn:Disconnect()
+				local ok = (not cancelled) and st == Enum.UserInputState.End
+				if ok and ut == MOUSE1 and not Over(obj) then
+					ok = false
+				end
+				up(not ok)
+				if ok then
+					fn()
+				end
+			elseif not cancelled then
+				local moved = (Vector2.new(input.Position.X, input.Position.Y) - start).Magnitude > slop
+				if not moved and opts.Canvas then
+					moved = math.abs(opts.Canvas.CanvasPosition.Y - canvas0) > 4
+				end
+				if moved then
+					cancelled = true
+					up(true)
+				end
+			end
+		end)
+	end)
+end
+
+local function MakeIcon(parent, kind, size, color)
+	local k = size / 20
+	local root = New("Frame", {
+		Name = "Icon",
+		BackgroundTransparency = 1,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(size, size),
+		Parent = parent,
+	})
+	local fills, strokes = {}, {}
+	local cur = color
+
+	local function rect(x, y, w, h, rot, r)
+		local f = New("Frame", {
+			BackgroundColor3 = color,
+			BorderSizePixel = 0,
+			Position = UDim2.fromOffset(x * k, y * k),
+			Size = UDim2.fromOffset(w * k, h * k),
+			Rotation = rot or 0,
+			Parent = root,
+		})
+		if r then
+			Corner(f, r * k)
+		end
+		fills[#fills + 1] = f
+		return f
+	end
+
+	local function tri(x, y, w, h, dir)
+		local wk, hk = w * k, h * k
+		local cols = math.max(6, math.ceil(wk * 2))
+		local cw = wk / cols
+		for i = 0, cols - 1 do
+			local frac = (i + 0.5) / cols
+			if dir == "left" then
+				frac = 1 - frac
+			end
+			local ch = math.max(0.5, hk * (1 - frac))
+			local f = New("Frame", {
+				BackgroundColor3 = color,
+				BorderSizePixel = 0,
+				Position = UDim2.fromOffset(x * k + i * cw, y * k + (hk - ch) / 2),
+				Size = UDim2.fromOffset(cw + 0.7, ch),
+				Parent = root,
+			})
+			fills[#fills + 1] = f
+		end
+	end
+
+	local function ring(x, y, w, h, thickness, radius)
+		local f = New("Frame", {
+			BackgroundTransparency = 1,
+			Position = UDim2.fromOffset(x * k, y * k),
+			Size = UDim2.fromOffset(w * k, h * k),
+			Parent = root,
+		})
+		Corner(f, radius * k)
+		strokes[#strokes + 1] = Stroke(f, color, math.max(1, thickness * k))
+	end
+
+	if kind == "play" then
+		tri(5, 3, 12, 14, "right")
+	elseif kind == "pause" then
+		rect(4.5, 3.5, 4, 13, 0, 1.2)
+		rect(11.5, 3.5, 4, 13, 0, 1.2)
+	elseif kind == "next" then
+		tri(3, 4, 10, 12, "right")
+		rect(14, 4, 3, 12, 0, 1.2)
+	elseif kind == "prev" then
+		rect(3, 4, 3, 12, 0, 1.2)
+		tri(7, 4, 10, 12, "left")
+	elseif kind == "plus" then
+		rect(3, 9, 14, 2, 0, 1)
+		rect(9, 3, 2, 14, 0, 1)
+	elseif kind == "minus" then
+		rect(3, 9, 14, 2, 0, 1)
+	elseif kind == "close" then
+		rect(2, 9, 16, 2, 45, 1)
+		rect(2, 9, 16, 2, -45, 1)
+	elseif kind == "search" then
+		ring(2, 2, 11, 11, 2, 100)
+		rect(11.5, 14, 7, 2, 45, 1)
+	elseif kind == "note" then
+		rect(3, 12, 7, 6, 0, 3)
+		rect(8, 3, 2, 12, 0, 0.5)
+		rect(10, 3, 6, 3, 0, 1.5)
+	elseif kind == "list" then
+		rect(3, 4, 14, 2, 0, 1)
+		rect(3, 9, 14, 2, 0, 1)
+		rect(3, 14, 9, 2, 0, 1)
+	elseif kind == "shuffle" then
+		rect(2, 9, 13, 2, 32, 1)
+		rect(2, 9, 13, 2, -32, 1)
+		tri(14, 4, 5, 5, "right")
+		tri(14, 11, 5, 5, "right")
+	elseif kind == "repeat" then
+		ring(2, 5, 16, 10, 2, 4)
+		tri(12, 2, 5, 6, "right")
+	end
+
+	local function apply(c)
+		cur = c
+		for _, f in ipairs(fills) do
+			f.BackgroundColor3 = c
+		end
+		for _, s in ipairs(strokes) do
+			s.Color = c
+		end
+	end
+
+	local nv = Instance.new("NumberValue")
+	local from, to = color, color
+	local active
+	nv.Changed:Connect(function(v)
+		apply(from:Lerp(to, v))
+	end)
+
+	local icon = { Root = root }
+	function icon.SetColor(c)
+		if active then
+			active:Cancel()
+		end
+		apply(c)
+	end
+	function icon.TweenColor(c, t)
+		if c == cur then
+			return
+		end
+		if active then
+			active:Cancel()
+		end
+		from, to = cur, c
+		nv.Value = 0
+		active = TweenService:Create(nv, TweenInfo.new(t or 0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Value = 1 })
+		active:Play()
+	end
+	return icon
+end
+
+local function IconButton(parent, kind, w, iconSize, props)
+	props = props or {}
+	local h = props.Height or w
+	local btn = New("TextButton", {
+		Name = kind .. "Btn",
+		AutoButtonColor = false,
+		Text = "",
+		BorderSizePixel = 0,
+		BackgroundTransparency = props.Bg and 0 or 1,
+		BackgroundColor3 = props.Bg or COLORS.Card,
+		Size = UDim2.fromOffset(w, h),
+		Parent = parent,
+	})
+	if props.Radius then
+		Corner(btn, props.Radius)
+	end
+	local scale = New("UIScale", { Parent = btn })
+	local ctl = { Button = btn, Idle = props.Idle or COLORS.SubText, Hover = props.Hover or COLORS.Text }
+	ctl.Icon = MakeIcon(btn, kind, iconSize, ctl.Idle)
+	function ctl.SetIdle(c)
+		ctl.Idle = c
+		ctl.Icon.TweenColor(c, 0.15)
+	end
+	Bind(btn.MouseEnter, function()
+		ctl.Icon.TweenColor(ctl.Hover, 0.12)
+		if props.HoverScale then
+			Tween(scale, 0.12, { Scale = props.HoverScale })
+		end
+	end)
+	Bind(btn.MouseLeave, function()
+		ctl.Icon.TweenColor(ctl.Idle, 0.12)
+		Tween(scale, 0.12, { Scale = 1 })
+	end)
+	OnTap(btn, function()
+		if props.OnClick then
+			props.OnClick()
+		end
+	end, {
+		Canvas = props.Canvas,
+		OnDown = function()
+			Tween(scale, 0.07, { Scale = 0.88 })
+		end,
+		OnUp = function()
+			Tween(scale, 0.22, { Scale = 1 }, Enum.EasingStyle.Back)
+		end,
+	})
+	return ctl
+end
+
+local function MakeSlider(parent, pos, size, init, onChange, onCommit)
+	local hit = New("TextButton", {
+		Name = "Slider",
+		AutoButtonColor = false,
+		Text = "",
+		BackgroundTransparency = 1,
+		Position = pos,
+		Size = size,
+		Parent = parent,
+	})
+	local bar = New("Frame", {
+		BackgroundColor3 = COLORS.Track,
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 0, 0.5, 0),
+		Size = UDim2.new(1, 0, 0, 4),
+		Parent = hit,
+	})
+	Corner(bar, 2)
+	local fill = New("Frame", {
+		BackgroundColor3 = COLORS.Text,
+		BorderSizePixel = 0,
+		Size = UDim2.fromScale(init, 1),
+		Parent = bar,
+	})
+	Corner(fill, 2)
+	local knob = New("Frame", {
+		BackgroundColor3 = COLORS.Text,
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(1, 0, 0.5, 0),
+		Size = UDim2.fromOffset(12, 12),
+		Parent = fill,
+	})
+	Corner(knob, 6)
+	local knobScale = New("UIScale", { Scale = 0, Parent = knob })
+
+	local obj = { Value = init, Dragging = false }
+	local activeInput
+	local hovering = false
+
+	local function visuals()
+		local on = obj.Dragging or hovering
+		Tween(knobScale, 0.14, { Scale = on and 1 or 0 })
+		Tween(fill, 0.14, { BackgroundColor3 = on and COLORS.Accent or COLORS.Text })
+	end
+
+	local function setFromX(x)
+		local v = math.clamp((x - bar.AbsolutePosition.X) / math.max(1, bar.AbsoluteSize.X), 0, 1)
+		obj.Value = v
+		fill.Size = UDim2.fromScale(v, 1)
+		if onChange then
+			onChange(v)
+		end
+	end
+
+	function obj.Set(v)
+		if obj.Dragging then
+			return
+		end
+		v = math.clamp(v, 0, 1)
+		obj.Value = v
+		fill.Size = UDim2.fromScale(v, 1)
+	end
+
+	Bind(hit.MouseEnter, function()
+		hovering = true
+		visuals()
+	end)
+	Bind(hit.MouseLeave, function()
+		hovering = false
+		visuals()
+	end)
+	Bind(hit.InputBegan, function(input)
+		if input.UserInputType == MOUSE1 or input.UserInputType == TOUCH then
+			obj.Dragging = true
+			activeInput = input
+			visuals()
+			setFromX(input.Position.X)
+		end
+	end)
+	Bind(UserInputService.InputChanged, function(input)
+		if not obj.Dragging then
+			return
+		end
+		if input == activeInput or (input.UserInputType == Enum.UserInputType.MouseMovement and activeInput.UserInputType == MOUSE1) then
+			setFromX(input.Position.X)
+		end
+	end)
+	Bind(UserInputService.InputEnded, function(input)
+		if not obj.Dragging then
+			return
+		end
+		local same = input == activeInput or (input.UserInputType == MOUSE1 and activeInput.UserInputType == MOUSE1)
+		if same then
+			obj.Dragging = false
+			visuals()
+			if onCommit then
+				onCommit(obj.Value)
+			end
+		end
+	end)
+	return obj
+end
+
+local function ClampV(x, y, half)
+	local vs = ViewSize()
+	return Vector2.new(
+		math.clamp(x, half.X, math.max(half.X, vs.X - half.X)),
+		math.clamp(y, half.Y, math.max(half.Y, vs.Y - half.Y))
+	)
+end
+
+local function Clamped(x, y, half)
+	local v = ClampV(x, y, half)
+	return UDim2.fromOffset(v.X, v.Y)
+end
+
+local Followers = {}
+
+local function MakeDraggable(handle, target, getHalf, opts)
+	opts = opts or {}
+	local f = { Obj = target, Cur = Vector2.zero, Tar = Vector2.zero, Active = false, Dragging = false }
+	Followers[#Followers + 1] = f
+	local moved = false
+	local startInput, startMouse, startPos
+
+	Bind(handle.InputBegan, function(input)
+		if input.UserInputType ~= MOUSE1 and input.UserInputType ~= TOUCH then
+			return
+		end
+		f.Dragging = true
+		moved = false
+		startInput = input
+		startMouse = Vector2.new(input.Position.X, input.Position.Y)
+		startPos = Vector2.new(target.Position.X.Offset, target.Position.Y.Offset)
+		f.Cur, f.Tar = startPos, startPos
+		f.Active = false
+		if opts.OnDown then
+			opts.OnDown()
+		end
+	end)
+	Bind(UserInputService.InputChanged, function(input)
+		if not f.Dragging then
+			return
+		end
+		if input == startInput or (input.UserInputType == Enum.UserInputType.MouseMovement and startInput.UserInputType == MOUSE1) then
+			local d = Vector2.new(input.Position.X, input.Position.Y) - startMouse
+			if not moved and d.Magnitude > (opts.Slop or 8) then
+				moved = true
+			end
+			if moved then
+				f.Tar = ClampV(startPos.X + d.X, startPos.Y + d.Y, getHalf())
+				f.Active = true
+			end
+		end
+	end)
+	Bind(UserInputService.InputEnded, function(input)
+		if not f.Dragging then
+			return
+		end
+		local same = input == startInput or (input.UserInputType == MOUSE1 and startInput.UserInputType == MOUSE1)
+		if same then
+			f.Dragging = false
+			if opts.OnUp then
+				opts.OnUp(moved)
+			end
+			if not moved and opts.OnClick then
+				opts.OnClick()
+			end
+		end
+	end)
+	return f
+end
+
+local WW, WH = CONFIG.WindowSize.X, CONFIG.WindowSize.Y
+local FS = CONFIG.FloatSize
+local TabH = 56
+local vs0 = ViewSize()
+
+local Holder = New("Frame", {
+	Name = "Holder",
+	BackgroundTransparency = 1,
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Size = UDim2.fromOffset(WW, WH),
+	Position = UDim2.fromOffset(vs0.X / 2, vs0.Y / 2),
+	Visible = false,
+	Parent = Gui,
+})
+local HolderScale = New("UIScale", { Scale = UserScale, Parent = Holder })
+
+local function HolderHalf()
+	return Vector2.new(WW, WH) * HolderScale.Scale / 2
+end
+local function ClampHolder()
+	Holder.Position = Clamped(Holder.Position.X.Offset, Holder.Position.Y.Offset, HolderHalf())
+end
+
+local Window = New("Frame", {
+	Name = "Window",
+	BackgroundColor3 = COLORS.Bg,
+	BorderSizePixel = 0,
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromScale(1, 1),
+	Active = true,
+	Parent = Holder,
+})
+Corner(Window, 20)
+Stroke(Window, COLORS.Border, 1)
+local WindowScale = New("UIScale", { Scale = 0.8, Parent = Window })
+
+local Glow = New("Frame", {
+	Name = "Glow",
+	BackgroundColor3 = Color3.fromRGB(58, 58, 58),
+	BorderSizePixel = 0,
+	Size = UDim2.new(1, 0, 0, 300),
+	Parent = Window,
+})
+Corner(Glow, 20)
+New("UIGradient", {
+	Rotation = 90,
+	Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.2),
+		NumberSequenceKeypoint.new(1, 1),
+	}),
+	Parent = Glow,
+})
+
+local Header = New("Frame", {
+	Name = "Header",
+	BackgroundTransparency = 1,
+	Size = UDim2.new(1, 0, 0, 44),
+	Active = true,
+	Parent = Window,
+})
+Label(Header, "Reproductor de música", 14, COLORS.Text, Enum.Font.GothamBold, UDim2.fromOffset(18, 6), UDim2.new(1, -70, 0, 18))
+Label(Header, "By 7.dui🇲🇽", 11, COLORS.SubText, Enum.Font.GothamMedium, UDim2.fromOffset(18, 24), UDim2.new(1, -70, 0, 14))
+
+local CloseUI, OpenUI
+local CloseBtn = IconButton(Header, "close", 30, 14, {
+	Radius = 15,
+	OnClick = function()
+		CloseUI()
+	end,
+})
+CloseBtn.Button.AnchorPoint = Vector2.new(1, 0.5)
+CloseBtn.Button.Position = UDim2.new(1, -10, 0.5, 0)
+
+New("Frame", {
+	Name = "HeaderLine",
+	BackgroundColor3 = COLORS.Stroke,
+	BorderSizePixel = 0,
+	Position = UDim2.fromOffset(0, 43),
+	Size = UDim2.new(1, 0, 0, 1),
+	Parent = Window,
+})
+
+local Pages = New("Frame", {
+	Name = "Pages",
+	BackgroundTransparency = 1,
+	Position = UDim2.fromOffset(0, 44),
+	Size = UDim2.new(1, 0, 0, WH - 44 - TabH),
+	ClipsDescendants = true,
+	Parent = Window,
+})
+local NowPage = New("Frame", { Name = "NowPage", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Parent = Pages })
+local LibPage = New("Frame", {
+	Name = "LibPage",
+	BackgroundTransparency = 1,
+	Position = UDim2.fromScale(1, 0),
+	Size = UDim2.fromScale(1, 1),
+	Parent = Pages,
+})
+
+local CoverSize = 224
+local CoverCY = 10 + CoverSize / 2
+
+local CoverShadow = New("Frame", {
+	Name = "CoverShadow",
+	BackgroundColor3 = Color3.new(0, 0, 0),
+	BackgroundTransparency = 0.55,
+	BorderSizePixel = 0,
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.5, 0, 0, CoverCY + 12),
+	Size = UDim2.fromOffset(CoverSize - 24, CoverSize),
+	Parent = NowPage,
+})
+Corner(CoverShadow, 16)
+local CoverShadowScale = New("UIScale", { Scale = 0.9, Parent = CoverShadow })
+
+local Cover = New("Frame", {
+	Name = "Cover",
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.5, 0, 0, CoverCY),
+	Size = UDim2.fromOffset(CoverSize, CoverSize),
+	Parent = NowPage,
+})
+local CoverScale = New("UIScale", { Scale = 0.9, Parent = Cover })
+local CoverBg = New("Frame", {
+	Name = "CoverBg",
+	BackgroundColor3 = Color3.new(1, 1, 1),
+	BorderSizePixel = 0,
+	Size = UDim2.fromScale(1, 1),
+	Parent = Cover,
+})
+Corner(CoverBg, 10)
+local CoverGrad = New("UIGradient", { Rotation = 45, Color = ColorSequence.new(COLORS.Neutral1, COLORS.Neutral2), Parent = CoverBg })
+local CoverNote = MakeIcon(CoverBg, "note", 80, Color3.fromRGB(235, 235, 235))
+local CoverImage = New("ImageLabel", {
+	Name = "CoverImage",
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	Image = "",
+	ScaleType = Enum.ScaleType.Crop,
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromScale(1, 1),
+	Visible = false,
+	Parent = Cover,
+})
+Corner(CoverImage, 10)
+ImageUsers[#ImageUsers + 1] = { Label = CoverImage, Id = CONFIG.CoverImage }
+
+local function SyncCoverNote()
+	CoverNote.Root.Visible = not (CoverImage.Visible and CoverImage.IsLoaded)
+end
+Bind(CoverImage:GetPropertyChangedSignal("IsLoaded"), SyncCoverNote)
+
+local Pill = New("Frame", {
+	Name = "Status",
+	BackgroundColor3 = Color3.new(0, 0, 0),
+	BackgroundTransparency = 1,
+	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 1, -10),
+	Size = UDim2.fromOffset(120, 24),
+	Visible = false,
+	Parent = Cover,
+})
+Corner(Pill, 12)
+local PillText = Label(Pill, "", 11, COLORS.Text, Enum.Font.GothamBold, UDim2.fromScale(0, 0), UDim2.fromScale(1, 1), Enum.TextXAlignment.Center)
+PillText.TextTransparency = 1
+
+local TitleLabel = Label(NowPage, "Sin canción", 22, COLORS.Text, Enum.Font.GothamBold, UDim2.fromOffset(24, 246), UDim2.fromOffset(252, 28))
+local ArtistLabel = Label(NowPage, "", 14, COLORS.SubText, Enum.Font.GothamMedium, UDim2.fromOffset(24, 274), UDim2.fromOffset(252, 18))
+
+local TimeL = Label(NowPage, "0:00", 11, COLORS.SubText, Enum.Font.GothamMedium, UDim2.fromOffset(24, 322), UDim2.fromOffset(60, 14))
+local TimeR = Label(NowPage, "0:00", 11, COLORS.SubText, Enum.Font.GothamMedium, UDim2.fromOffset(216, 322), UDim2.fromOffset(60, 14), Enum.TextXAlignment.Right)
+
+local Current, LoadedTrack
+local Intent, LoadingNow = false, false
+local Shuffle, RepeatMode = false, 0
+local History = {}
+local LoadToken = 0
+local FailStreak = 0
+
+local ProgressSlider
+ProgressSlider = MakeSlider(NowPage, UDim2.fromOffset(24, 296), UDim2.fromOffset(252, 24), 0, function(v)
+	if Music.TimeLength > 0 then
+		TimeL.Text = FormatTime(v * Music.TimeLength)
+	end
+end, function(v)
+	if Current and LoadedTrack == Current and Music.IsLoaded and Music.TimeLength > 0 then
+		Music.TimePosition = v * Music.TimeLength
+	end
+end)
+
+local Controls = New("Frame", {
+	Name = "Controls",
+	BackgroundTransparency = 1,
+	Position = UDim2.fromOffset(24, 338),
+	Size = UDim2.fromOffset(252, 56),
+	Parent = NowPage,
+})
+New("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal,
+	HorizontalAlignment = Enum.HorizontalAlignment.Center,
+	VerticalAlignment = Enum.VerticalAlignment.Center,
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	Padding = UDim.new(0, 11),
+	Parent = Controls,
+})
+
+local ShuffleBtn, PrevBtn, PlayBtn, NextBtn, RepeatBtn
+
+local SelectTrack, LoadTrack, Advance, TogglePlay, RefreshItem, UpdatePlayState
+
+ShuffleBtn = IconButton(Controls, "shuffle", 36, 20, {
+	Radius = 18,
+	OnClick = function()
+		Shuffle = not Shuffle
+		ShuffleBtn.Hover = Shuffle and COLORS.Accent or COLORS.Text
+		ShuffleBtn.SetIdle(Shuffle and COLORS.Accent or COLORS.SubText)
+	end,
+})
+ShuffleBtn.Button.LayoutOrder = 1
+
+PrevBtn = IconButton(Controls, "prev", 40, 22, {
+	Radius = 20,
+	OnClick = function()
+		if Current and LoadedTrack == Current and Music.TimePosition > 3 then
+			Music.TimePosition = 0
+			return
+		end
+		local prevTrack
+		while #History > 0 do
+			local t = table.remove(History)
+			if table.find(Tracks, t) then
+				prevTrack = t
+				break
+			end
+		end
+		if prevTrack then
+			LoadTrack(prevTrack, true, true)
+		else
+			local n = #Tracks
+			if n == 0 then
+				return
+			end
+			local idx = Current and table.find(Tracks, Current) or 1
+			local ni = idx - 1
+			if ni < 1 then
+				ni = n
+			end
+			LoadTrack(Tracks[ni], true)
+		end
+	end,
+})
+PrevBtn.Button.LayoutOrder = 2
+PrevBtn.Hover = COLORS.Text
+PrevBtn.Idle = COLORS.Text
+PrevBtn.Icon.SetColor(COLORS.Text)
+
+PlayBtn = IconButton(Controls, "play", 56, 26, {
+	Radius = 28,
+	Bg = COLORS.Text,
+	Idle = COLORS.Bg,
+	Hover = COLORS.Bg,
+	HoverScale = 1.06,
+	OnClick = function()
+		TogglePlay()
+	end,
+})
+PlayBtn.Button.LayoutOrder = 3
+local PauseIcon = MakeIcon(PlayBtn.Button, "pause", 26, COLORS.Bg)
+PauseIcon.Root.Visible = false
+
+NextBtn = IconButton(Controls, "next", 40, 22, {
+	Radius = 20,
+	OnClick = function()
+		Advance(1, false)
+	end,
+})
+NextBtn.Button.LayoutOrder = 4
+NextBtn.Hover = COLORS.Text
+NextBtn.Idle = COLORS.Text
+NextBtn.Icon.SetColor(COLORS.Text)
+
+RepeatBtn = IconButton(Controls, "repeat", 36, 20, {
+	Radius = 18,
+	OnClick = function()
+		RepeatMode = (RepeatMode + 1) % 3
+		Music.Looped = (RepeatMode == 2)
+		RepeatBtn.Hover = RepeatMode > 0 and COLORS.Accent or COLORS.Text
+		RepeatBtn.SetIdle(RepeatMode > 0 and COLORS.Accent or COLORS.SubText)
+		RepeatBtn.Mark.Visible = RepeatMode == 2
+	end,
+})
+RepeatBtn.Button.LayoutOrder = 5
+RepeatBtn.Mark = New("TextLabel", {
+	BackgroundTransparency = 1,
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(12, 12),
+	Text = "1",
+	TextSize = 9,
+	Font = Enum.Font.GothamBold,
+	TextColor3 = COLORS.Accent,
+	Visible = false,
+	Parent = RepeatBtn.Button,
+})
+
+local VolLabel = Label(NowPage, "", 11, COLORS.SubText, Enum.Font.GothamMedium, UDim2.fromOffset(24, 436), UDim2.fromOffset(252, 14), Enum.TextXAlignment.Center)
+local VolumeSlider
+local function SetVolume(v)
+	Volume = math.clamp(math.floor(v * 100 + 0.5) / 100, 0, 1)
+	ApplyVolume(Volume)
+	if VolumeSlider then
+		VolumeSlider.Set(Volume)
+	end
+	VolLabel.Text = ("Volumen %d%%"):format(math.floor(Volume * 100 + 0.5))
+end
+
+local VolDown = IconButton(NowPage, "minus", 28, 14, {
+	Radius = 14,
+	OnClick = function()
+		SetVolume(Volume - CONFIG.VolumeStep)
+		Save()
+	end,
+})
+VolDown.Button.Position = UDim2.fromOffset(24, 404)
+
+VolumeSlider = MakeSlider(NowPage, UDim2.fromOffset(60, 404), UDim2.fromOffset(176, 28), Volume, function(v)
+	Volume = v
+	ApplyVolume(v)
+	VolLabel.Text = ("Volumen %d%%"):format(math.floor(v * 100 + 0.5))
+end, function()
+	Save()
+end)
+
+local VolUp = IconButton(NowPage, "plus", 28, 14, {
+	Radius = 14,
+	OnClick = function()
+		SetVolume(Volume + CONFIG.VolumeStep)
+		Save()
+	end,
+})
+VolUp.Button.Position = UDim2.fromOffset(244, 404)
+SetVolume(Volume)
+
+Label(LibPage, "Tu biblioteca", 20, COLORS.Text, Enum.Font.GothamBold, UDim2.fromOffset(18, 8), UDim2.fromOffset(264, 26))
+local SearchBox = New("Frame", {
+	Name = "Search",
+	BackgroundColor3 = COLORS.Field,
+	BorderSizePixel = 0,
+	Position = UDim2.fromOffset(16, 42),
+	Size = UDim2.fromOffset(268, 34),
+	Parent = LibPage,
+})
+Corner(SearchBox, 10)
+Stroke(SearchBox, COLORS.Stroke, 1)
+local SearchIcon = MakeIcon(SearchBox, "search", 18, COLORS.SubText)
+SearchIcon.Root.Position = UDim2.fromOffset(22, 17)
+local SearchInput = New("TextBox", {
+	BackgroundTransparency = 1,
+	ClearTextOnFocus = false,
+	PlaceholderText = "Buscar canción",
+	PlaceholderColor3 = COLORS.SubText,
+	Text = "",
+	TextColor3 = COLORS.Text,
+	TextSize = 13,
+	Font = Enum.Font.GothamMedium,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Position = UDim2.fromOffset(40, 0),
+	Size = UDim2.new(1, -50, 1, 0),
+	Parent = SearchBox,
+})
+
+local List = New("ScrollingFrame", {
+	Name = "List",
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	Position = UDim2.fromOffset(16, 84),
+	Size = UDim2.fromOffset(268, WH - 44 - TabH - 90),
+	CanvasSize = UDim2.new(),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	ScrollBarThickness = 3,
+	ScrollBarImageColor3 = COLORS.Accent,
+	ScrollBarImageTransparency = 0.3,
+	ScrollingDirection = Enum.ScrollingDirection.Y,
+	ElasticBehavior = Enum.ElasticBehavior.Always,
+	Active = true,
+	Parent = LibPage,
+})
+New("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = List })
+New("UIPadding", { PaddingRight = UDim.new(0, 7), Parent = List })
+
+local EmptyLabel = Label(LibPage, "", 12, COLORS.SubText, Enum.Font.GothamMedium, UDim2.fromOffset(16, 150), UDim2.fromOffset(268, 20), Enum.TextXAlignment.Center)
+
+New("Frame", {
+	Name = "TabBg",
+	BackgroundColor3 = COLORS.Bar,
+	BorderSizePixel = 0,
+	Position = UDim2.fromOffset(0, WH - TabH),
+	Size = UDim2.new(1, 0, 0, TabH),
+	Parent = Window,
+}, { New("UICorner", { CornerRadius = UDim.new(0, 20) }) })
+New("Frame", {
+	Name = "TabCover",
+	BackgroundColor3 = COLORS.Bar,
+	BorderSizePixel = 0,
+	Position = UDim2.fromOffset(0, WH - TabH),
+	Size = UDim2.new(1, 0, 0, 20),
+	Parent = Window,
+})
+local TabBar = New("Frame", {
+	Name = "TabBar",
+	BackgroundTransparency = 1,
+	Position = UDim2.fromOffset(0, WH - TabH),
+	Size = UDim2.new(1, 0, 0, TabH),
+	Parent = Window,
+})
+New("Frame", {
+	Name = "TabLine",
+	BackgroundColor3 = COLORS.Stroke,
+	BorderSizePixel = 0,
+	Position = UDim2.fromOffset(0, 0),
+	Size = UDim2.new(1, 0, 0, 1),
+	Parent = TabBar,
+})
+local Indicator = New("Frame", {
+	BackgroundColor3 = COLORS.Accent,
+	BorderSizePixel = 0,
+	AnchorPoint = Vector2.new(0.5, 0),
+	Position = UDim2.new(0.25, 0, 0, 0),
+	Size = UDim2.fromOffset(36, 2),
+	Parent = TabBar,
+})
+Corner(Indicator, 1)
+
+local Tabs = {}
+local CurrentTab = 1
+local function SwitchTab(i)
+	CurrentTab = i
+	Tween(NowPage, 0.4, { Position = UDim2.fromScale(i == 1 and 0 or -1, 0) })
+	Tween(LibPage, 0.4, { Position = UDim2.fromScale(i == 1 and 1 or 0, 0) })
+	Tween(Indicator, 0.4, { Position = UDim2.new(i == 1 and 0.25 or 0.75, 0, 0, 0) })
+	for idx, t in ipairs(Tabs) do
+		local c = idx == i and COLORS.Text or COLORS.SubText
+		t.Icon.TweenColor(c, 0.2)
+		Tween(t.Label, 0.2, { TextColor3 = c }, Enum.EasingStyle.Quad)
+	end
+end
+
+local function MakeTab(i, kind, text)
+	local b = New("TextButton", {
+		AutoButtonColor = false,
+		Text = "",
+		BackgroundTransparency = 1,
+		Position = UDim2.fromScale((i - 1) * 0.5, 0),
+		Size = UDim2.fromScale(0.5, 1),
+		Parent = TabBar,
+	})
+	local icon = MakeIcon(b, kind, 20, i == 1 and COLORS.Text or COLORS.SubText)
+	icon.Root.Position = UDim2.new(0.5, 0, 0, 21)
+	local lbl = Label(b, text, 10, i == 1 and COLORS.Text or COLORS.SubText, Enum.Font.GothamMedium, UDim2.fromOffset(0, 35), UDim2.new(1, 0, 0, 14), Enum.TextXAlignment.Center)
+	OnTap(b, function()
+		if CurrentTab ~= i then
+			SwitchTab(i)
+		end
+	end)
+	Tabs[i] = { Icon = icon, Label = lbl }
+end
+MakeTab(1, "note", "Reproduciendo")
+MakeTab(2, "list", "Biblioteca")
+
+local ResizeHandle = New("TextButton", {
+	Name = "Resize",
+	AutoButtonColor = false,
+	Text = "",
+	BackgroundTransparency = 1,
+	AnchorPoint = Vector2.new(1, 1),
+	Position = UDim2.fromScale(1, 1),
+	Size = UDim2.fromOffset(30, 30),
+	Parent = Window,
+})
+for i = 1, 3 do
+	local d = 6 + i * 4
+	local line = New("Frame", {
+		BackgroundColor3 = COLORS.Accent,
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromOffset(30 - d, 30 - d),
+		Size = UDim2.fromOffset(i * 4, 2),
+		Rotation = -45,
+		Parent = ResizeHandle,
+	})
+	Corner(line, 1)
+end
+
+local Float = New("Frame", {
+	Name = "Float",
+	BackgroundTransparency = 1,
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Size = UDim2.fromOffset(FS, FS),
+	Position = UDim2.fromOffset(vs0.X - FS / 2 - 12, vs0.Y * 0.5),
+	Visible = false,
+	Parent = Gui,
+})
+local FloatScale = New("UIScale", { Scale = 0, Parent = Float })
+
+local PulseRing = New("Frame", {
+	Name = "Pulse",
+	BackgroundColor3 = COLORS.Accent,
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromScale(1, 1),
+	Visible = false,
+	Parent = Float,
+})
+Corner(PulseRing, FS / 2)
+local PulseScale = New("UIScale", { Parent = PulseRing })
+
+local FloatBtn = New("ImageButton", {
+	Name = "Disc",
+	AutoButtonColor = false,
+	BackgroundColor3 = COLORS.Bar,
+	BorderSizePixel = 0,
+	Image = ImageUrl(CONFIG.FloatImage),
+	ScaleType = Enum.ScaleType.Crop,
+	Size = UDim2.fromScale(1, 1),
+	Parent = Float,
+})
+Corner(FloatBtn, FS / 2)
+ImageUsers[#ImageUsers + 1] = { Label = FloatBtn, Id = CONFIG.FloatImage }
+Stroke(FloatBtn, COLORS.Accent, 2)
+local FloatBtnScale = New("UIScale", { Parent = FloatBtn })
+
+local function MaxFit()
+	local vs = ViewSize()
+	return math.min((vs.Y - 24) / WH, (vs.X - 16) / WW, CONFIG.MaxScale)
+end
+
+local FloatHalf = Vector2.new(FS, FS) / 2
+
+local function ApplyFit()
+	local s = math.clamp(UserScale, CONFIG.MinScale, math.max(CONFIG.MinScale, MaxFit()))
+	HolderScale.Scale = s
+	ClampHolder()
+	Float.Position = Clamped(Float.Position.X.Offset, Float.Position.Y.Offset, FloatHalf)
+end
+
+local function SetStatus(text)
+	if text then
+		PillText.Text = text
+		Pill.Visible = true
+		Tween(Pill, 0.2, { BackgroundTransparency = 0.35 }, Enum.EasingStyle.Quad)
+		Tween(PillText, 0.2, { TextTransparency = 0 }, Enum.EasingStyle.Quad)
+	else
+		Tween(Pill, 0.2, { BackgroundTransparency = 1 }, Enum.EasingStyle.Quad)
+		Tween(PillText, 0.2, { TextTransparency = 1 }, Enum.EasingStyle.Quad)
+		task.delay(0.2, function()
+			if PillText.TextTransparency >= 0.99 then
+				Pill.Visible = false
+			end
+		end)
+	end
+end
+
+local function ApplyFilter()
+	local q = string.lower(SearchInput.Text or "")
+	local shown = 0
+	for _, t in ipairs(Tracks) do
+		if t.UI then
+			local match = q == "" or string.find(string.lower(t.Title), q, 1, true) ~= nil
+			t.UI.Item.Visible = match
+			if match then
+				shown += 1
+			end
+		end
+	end
+	if shown == 0 then
+		EmptyLabel.Text = #Tracks == 0 and "Sin canciones" or "Sin resultados"
+		EmptyLabel.Visible = true
+	else
+		EmptyLabel.Visible = false
+	end
+end
+Bind(SearchInput:GetPropertyChangedSignal("Text"), ApplyFilter)
+
+function RefreshItem(track)
+	local ui = track and track.UI
+	if not ui then
+		return
+	end
+	local active = (track == Current)
+	ui.Title.TextColor3 = track.Failed and COLORS.Danger or (active and COLORS.Accent or COLORS.Text)
+	ui.Title.Text = track.Failed and (track.Title .. "  ·  no disponible") or track.Title
+	Tween(ui.Bg, 0.2, { BackgroundColor3 = active and COLORS.ActiveRow or COLORS.Row }, Enum.EasingStyle.Quad)
+	Tween(ui.Stroke, 0.2, { Transparency = active and 0.6 or 1 }, Enum.EasingStyle.Quad)
+	ui.EqFrame.Visible = active and Music.IsPlaying
+end
+
+local function BuildItem(track)
+	local item = New("Frame", {
+		Name = "Track",
+		BackgroundTransparency = 1,
+		ClipsDescendants = true,
+		Size = UDim2.new(1, 0, 0, 58),
+		Parent = List,
+	})
+	local bg = New("Frame", {
+		BackgroundColor3 = COLORS.Row,
+		BorderSizePixel = 0,
+		Size = UDim2.fromScale(1, 1),
+		Parent = item,
+	})
+	Corner(bg, 12)
+	local stroke = Stroke(bg, COLORS.Accent, 1, 1)
+
+	local cover = New("Frame", {
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		Position = UDim2.fromOffset(9, 9),
+		Size = UDim2.fromOffset(40, 40),
+		Parent = item,
+	})
+	Corner(cover, 8)
+	local c1, c2 = CoverColors(track)
+	New("UIGradient", { Rotation = 45, Color = ColorSequence.new(c1, c2), Parent = cover })
+	MakeIcon(cover, "note", 22, Color3.fromRGB(240, 240, 240))
+	local img = ImageUrl(track.Image or CONFIG.CoverImage)
+	if img ~= "" then
+		local il = New("ImageLabel", {
+			BackgroundTransparency = 1,
+			Image = img,
+			ScaleType = Enum.ScaleType.Crop,
+			Size = UDim2.fromScale(1, 1),
+			Parent = cover,
+		})
+		Corner(il, 8)
+		ImageUsers[#ImageUsers + 1] = { Label = il, Id = ToNum(track.Image or CONFIG.CoverImage) }
+	end
+	Stroke(cover, COLORS.Border, 1)
+
+	local title = Label(item, track.Title, 14, COLORS.Text, Enum.Font.GothamBold, UDim2.fromOffset(60, 10), UDim2.new(1, -92, 0, 20))
+	Label(item, track.Artist or CONFIG.DefaultArtist, 12, COLORS.SubText, Enum.Font.GothamMedium, UDim2.fromOffset(60, 30), UDim2.new(1, -92, 0, 16))
+	local eqFrame = New("Frame", {
+		BackgroundTransparency = 1,
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0.5, 0),
+		Size = UDim2.fromOffset(14, 14),
+		Visible = false,
+		Parent = item,
+	})
+	local bars = {}
+	for i = 1, 3 do
+		bars[i] = New("Frame", {
+			BackgroundColor3 = COLORS.Accent,
+			BorderSizePixel = 0,
+			AnchorPoint = Vector2.new(0, 1),
+			Position = UDim2.fromOffset((i - 1) * 5, 14),
+			Size = UDim2.fromOffset(3, 6),
+			Parent = eqFrame,
+		})
+	end
+	local hit = New("TextButton", {
+		AutoButtonColor = false,
+		Text = "",
+		BackgroundTransparency = 1,
+		Size = UDim2.fromScale(1, 1),
+		Parent = item,
+	})
+	Bind(hit.MouseEnter, function()
+		if track ~= Current then
+			Tween(bg, 0.12, { BackgroundColor3 = COLORS.Field }, Enum.EasingStyle.Quad)
+		end
+	end)
+	Bind(hit.MouseLeave, function()
+		if track ~= Current then
+			Tween(bg, 0.12, { BackgroundColor3 = COLORS.Row }, Enum.EasingStyle.Quad)
+		end
+	end)
+
+	local pressed = false
+	OnTap(hit, function()
+		if track == Current and not track.Failed then
+			TogglePlay()
+		else
+			FailStreak = 0
+			SelectTrack(track, true)
+		end
+	end, {
+		Canvas = List,
+		OnDown = function()
+			pressed = true
+			task.delay(0.07, function()
+				if pressed and track ~= Current then
+					Tween(bg, 0.1, { BackgroundColor3 = COLORS.PressRow }, Enum.EasingStyle.Quad)
+				end
+			end)
+		end,
+		OnUp = function()
+			pressed = false
+			if track ~= Current then
+				Tween(bg, 0.2, { BackgroundColor3 = COLORS.Row }, Enum.EasingStyle.Quad)
+			end
+		end,
+	})
+
+	track.UI = { Item = item, Bg = bg, Stroke = stroke, Title = title, EqFrame = eqFrame, Bars = bars }
+	item.Size = UDim2.new(1, 0, 0, 0)
+	Tween(item, 0.35, { Size = UDim2.new(1, 0, 0, 58) })
+	RefreshItem(track)
+end
+
+local function UpdateNowPlaying()
+	if Current then
+		TitleLabel.Text = Current.Title
+		ArtistLabel.Text = Current.Artist or CONFIG.DefaultArtist
+		local c1, c2 = CoverColors(Current)
+		Tween(Glow, 0.6, { BackgroundColor3 = c1:Lerp(Color3.new(0, 0, 0), 0.5) }, Enum.EasingStyle.Quad)
+		CoverGrad.Color = ColorSequence.new(c1, c2)
+		local img = ImageUrl(Current.Image or CONFIG.CoverImage)
+		CoverImage.Image = img
+		CoverImage.Visible = img ~= ""
+	else
+		TitleLabel.Text = "Sin canción"
+		ArtistLabel.Text = "Elige una canción en Biblioteca"
+		Tween(Glow, 0.6, { BackgroundColor3 = Color3.fromRGB(58, 58, 58) }, Enum.EasingStyle.Quad)
+		CoverGrad.Color = ColorSequence.new(COLORS.Neutral1, COLORS.Neutral2)
+		CoverImage.Image = ""
+		CoverImage.Visible = false
+	end
+	SyncCoverNote()
+	TitleLabel.TextTransparency = 1
+	ArtistLabel.TextTransparency = 1
+	Tween(TitleLabel, 0.3, { TextTransparency = 0 }, Enum.EasingStyle.Quad)
+	Tween(ArtistLabel, 0.3, { TextTransparency = 0 }, Enum.EasingStyle.Quad)
+	ProgressSlider.Set(0)
+	TimeL.Text = "0:00"
+	TimeR.Text = "0:00"
+	for _, t in ipairs(Tracks) do
+		RefreshItem(t)
+	end
+end
+
+function UpdatePlayState()
+	PlayBtn.Icon.Root.Visible = not Intent
+	PauseIcon.Root.Visible = Intent
+	Tween(CoverScale, 0.45, { Scale = Intent and 1 or 0.9 }, Enum.EasingStyle.Back)
+	Tween(CoverShadowScale, 0.45, { Scale = Intent and 1 or 0.9 }, Enum.EasingStyle.Back)
+	if Current then
+		RefreshItem(Current)
+	end
+end
+
+local function PickNext(dir, auto)
+	local n = #Tracks
+	if n == 0 then
+		return nil
+	end
+	local idx = Current and table.find(Tracks, Current) or 0
+	if Shuffle and n > 1 then
+		local r
+		repeat
+			r = math.random(n)
+		until r ~= idx
+		return Tracks[r]
+	end
+	local ni = idx + dir
+	if ni > n then
+		if RepeatMode == 1 or not auto then
+			ni = 1
+		else
+			return nil
+		end
+	end
+	if ni < 1 then
+		ni = n
+	end
+	return Tracks[ni]
+end
+
+local function GetSound(track)
+	local snd = track.Sound
+	if snd and snd.Parent then
+		return snd
+	end
+	snd = New("Sound", {
+		Name = "Track_" .. tostring(track.Title),
+		Volume = Volume,
+		Looped = false,
+		SoundId = "rbxassetid://" .. IdStr(track.Id),
+		Parent = SoundFolder,
+	})
+	track.Sound = snd
+	Bind(snd.Ended, function()
+		if snd ~= Music or LoadingNow or not Intent or RepeatMode == 2 then
+			return
+		end
+		Advance(1, true)
+	end)
+	Bind(snd:GetPropertyChangedSignal("Playing"), function()
+		if track == Current then
+			RefreshItem(track)
+		end
+	end)
+	return snd
+end
+
+function LoadTrack(track, autoplay, skipHistory)
+	if not track then
+		return
+	end
+	LoadToken += 1
+	local token = LoadToken
+	if not skipHistory and Current and Current ~= track then
+		History[#History + 1] = Current
+		if #History > 50 then
+			table.remove(History, 1)
+		end
+	end
+	local prev = Music
+	pcall(function()
+		prev:Stop()
+	end)
+	local snd = GetSound(track)
+	Music = snd
+	Current = track
+	LoadedTrack = track
+	Intent = autoplay and true or false
+	snd.Volume = Volume
+	snd.Looped = (RepeatMode == 2)
+	pcall(function()
+		snd.TimePosition = 0
+	end)
+	local ready = snd.IsLoaded and snd.TimeLength > 0
+	LoadingNow = not ready
+	UpdateNowPlaying()
+	UpdatePlayState()
+
+	if ready then
+		track.Failed = false
+		FailStreak = 0
+		SetStatus(nil)
+		RefreshItem(track)
+		TimeR.Text = FormatTime(snd.TimeLength)
+		if Intent then
+			snd:Play()
+		end
+		return
+	end
+
+	SetStatus("Cargando")
+	if Intent then
+		pcall(function()
+			snd:Play()
+		end)
+	end
+	task.spawn(function()
+		local t0 = os.clock()
+		while token == LoadToken and not (snd.IsLoaded and snd.TimeLength > 0) and os.clock() - t0 < 12 do
+			task.wait(0.05)
+		end
+		if token ~= LoadToken then
+			return
+		end
+		LoadingNow = false
+		if snd.IsLoaded and snd.TimeLength > 0 then
+			track.Failed = false
+			FailStreak = 0
+			SetStatus(nil)
+			RefreshItem(track)
+			TimeR.Text = FormatTime(snd.TimeLength)
+			if Intent then
+				if not snd.IsPlaying then
+					snd:Play()
+				end
+			else
+				pcall(function()
+					snd:Pause()
+				end)
+			end
+		else
+			track.Failed = true
+			FailStreak += 1
+			SetStatus("No disponible")
+			RefreshItem(track)
+			if Intent and FailStreak < #Tracks then
+				task.wait(1.2)
+				if token == LoadToken then
+					local nxt = PickNext(1, true)
+					if nxt and nxt ~= track then
+						LoadTrack(nxt, true)
+						return
+					end
+				end
+			end
+			Intent = false
+			pcall(function()
+				snd:Stop()
+			end)
+			UpdatePlayState()
+		end
+	end)
+end
+
+function SelectTrack(track, autoplay)
+	LoadTrack(track, autoplay)
+end
+
+function Advance(dir, auto)
+	local nxt = PickNext(dir, auto)
+	if not nxt then
+		Intent = false
+		pcall(function()
+			Music:Stop()
+		end)
+		Music.TimePosition = 0
+		ProgressSlider.Set(0)
+		TimeL.Text = "0:00"
+		UpdatePlayState()
+		return
+	end
+	FailStreak = 0
+	LoadTrack(nxt, true)
+end
+
+function TogglePlay()
+	if not Current then
+		if Tracks[1] then
+			FailStreak = 0
+			LoadTrack(Tracks[1], true)
+		end
+		return
+	end
+	if Intent then
+		Intent = false
+		pcall(function()
+			Music:Pause()
+		end)
+	else
+		if LoadedTrack ~= Current or Current.Failed then
+			FailStreak = 0
+			LoadTrack(Current, true, true)
+			return
+		end
+		Intent = true
+		pcall(function()
+			Music:Play()
+		end)
+	end
+	UpdatePlayState()
+end
+
+local Overlay = New("Frame", {
+	Name = "Fade",
+	BackgroundColor3 = COLORS.Bg,
+	BorderSizePixel = 0,
+	BackgroundTransparency = 0,
+	Size = UDim2.fromScale(1, 1),
+	Visible = false,
+	Parent = Window,
+})
+Corner(Overlay, 20)
+
+local Open, Busy = false, false
+
+local function ShowFloat()
+	Float.Visible = true
+	FloatScale.Scale = 0
+	Tween(FloatScale, 0.45, { Scale = 1 }, Enum.EasingStyle.Back)
+end
+
+local function HideFloat()
+	Tween(FloatScale, 0.18, { Scale = 0 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	task.delay(0.18, function()
+		if Open then
+			Float.Visible = false
+		end
+	end)
+end
+
+function OpenUI()
+	if Busy or Open then
+		return
+	end
+	Busy = true
+	Open = true
+	HideFloat()
+	ClampHolder()
+	Holder.Visible = true
+	WindowScale.Scale = 0.8
+	Overlay.BackgroundTransparency = 0
+	Overlay.Visible = true
+	Tween(WindowScale, 0.45, { Scale = 1 }, Enum.EasingStyle.Back)
+	Tween(Overlay, 0.3, { BackgroundTransparency = 1 }, Enum.EasingStyle.Quad)
+	task.delay(0.45, function()
+		Overlay.Visible = false
+		Busy = false
+	end)
+end
+
+function CloseUI()
+	if Busy or not Open then
+		return
+	end
+	Busy = true
+	Open = false
+	Overlay.BackgroundTransparency = 1
+	Overlay.Visible = true
+	Tween(WindowScale, 0.2, { Scale = 0.8 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	Tween(Overlay, 0.2, { BackgroundTransparency = 0 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	task.delay(0.2, function()
+		Holder.Visible = false
+		Overlay.Visible = false
+		ShowFloat()
+		Busy = false
+	end)
+end
+
+MakeDraggable(Header, Holder, HolderHalf)
+
+MakeDraggable(FloatBtn, Float, function()
+	return FloatHalf
+end, {
+	Slop = 8,
+	OnDown = function()
+		Tween(FloatBtnScale, 0.1, { Scale = 0.9 })
+	end,
+	OnUp = function()
+		Tween(FloatBtnScale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+	end,
+	OnClick = function()
+		OpenUI()
+	end,
+})
+
+do
+	local dragging = false
+	local startInput, startMouse, startScale, startCenter
+	Bind(ResizeHandle.InputBegan, function(input)
+		if input.UserInputType == MOUSE1 or input.UserInputType == TOUCH then
+			dragging = true
+			startInput = input
+			startMouse = input.Position
+			startScale = HolderScale.Scale
+			startCenter = Vector2.new(Holder.Position.X.Offset, Holder.Position.Y.Offset)
+		end
+	end)
+	Bind(UserInputService.InputChanged, function(input)
+		if not dragging then
+			return
+		end
+		if input == startInput or (input.UserInputType == Enum.UserInputType.MouseMovement and startInput.UserInputType == MOUSE1) then
+			local d = input.Position - startMouse
+			local s = ((WW * startScale + d.X) / WW + (WH * startScale + d.Y) / WH) / 2
+			s = math.clamp(s, CONFIG.MinScale, math.max(CONFIG.MinScale, MaxFit()))
+			local size0 = Vector2.new(WW, WH)
+			local topLeft = startCenter - size0 * startScale / 2
+			local center = topLeft + size0 * s / 2
+			UserScale = s
+			HolderScale.Scale = s
+			Holder.Position = Clamped(center.X, center.Y, size0 * s / 2)
+		end
+	end)
+	Bind(UserInputService.InputEnded, function(input)
+		if not dragging then
+			return
+		end
+		local same = input == startInput or (input.UserInputType == MOUSE1 and startInput.UserInputType == MOUSE1)
+		if same then
+			dragging = false
+			Save()
+		end
+	end)
+end
+
+Bind(Gui:GetPropertyChangedSignal("AbsoluteSize"), ApplyFit)
+
+local accEq, clock, lastSec = 0, 0, -1
+Bind(RunService.Heartbeat, function(dt)
+	clock += dt
+
+	for _, f in ipairs(Followers) do
+		if f.Active then
+			local rate = f.Dragging and CONFIG.Follow or 14
+			f.Cur = f.Cur:Lerp(f.Tar, 1 - math.exp(-dt * rate))
+			if not f.Dragging and (f.Cur - f.Tar).Magnitude < 0.25 then
+				f.Cur = f.Tar
+				f.Active = false
+			end
+			f.Obj.Position = UDim2.fromOffset(f.Cur.X, f.Cur.Y)
+		end
+	end
+
+	if Float.Visible and Intent and Music.IsPlaying then
+		local p = (clock * 0.8) % 1
+		PulseRing.Visible = true
+		PulseScale.Scale = 1 + p * 0.5
+		PulseRing.BackgroundTransparency = 0.55 + p * 0.45
+	elseif PulseRing.Visible then
+		PulseRing.Visible = false
+	end
+
+	if not Open then
+		return
+	end
+
+	if Current and LoadedTrack == Current and Music.TimeLength > 0 and not ProgressSlider.Dragging then
+		local pos = Music.TimePosition
+		ProgressSlider.Set(pos / Music.TimeLength)
+		local sec = math.floor(pos)
+		if sec ~= lastSec then
+			lastSec = sec
+			TimeL.Text = FormatTime(pos)
+			TimeR.Text = FormatTime(Music.TimeLength)
+		end
+	end
+
+	accEq += dt
+	if accEq >= 0.04 then
+		accEq = 0
+		if Current and Current.UI and Music.IsPlaying and Current.UI.EqFrame.Visible then
+			for i, bar in ipairs(Current.UI.Bars) do
+				local h = 3 + (math.sin(clock * (6 + i * 2.3) + i) * 0.5 + 0.5) * 11
+				bar.Size = UDim2.fromOffset(3, math.floor(h))
+			end
+		end
+	end
+end)
+
+for _, t in ipairs(Tracks) do
+	BuildItem(t)
+end
+ApplyFilter()
+
+if Tracks[1] then
+	LoadTrack(Tracks[1], false, true)
+	task.spawn(function()
+		pcall(function()
+			ContentProvider:PreloadAsync({ GetSound(Tracks[1]) })
+		end)
+		local rest = {}
+		for i = 2, #Tracks do
+			rest[#rest + 1] = GetSound(Tracks[i])
+		end
+		if #rest > 0 then
+			pcall(function()
+				ContentProvider:PreloadAsync(rest)
+			end)
+		end
+	end)
+else
+	UpdateNowPlaying()
+	UpdatePlayState()
+end
+
+task.spawn(function()
+	for _, id in ipairs({ CONFIG.CoverImage, CONFIG.FloatImage }) do
+		local tex = ResolveTexture(id)
+		if tex then
+			Resolved[id] = tex
+			for _, u in ipairs(ImageUsers) do
+				if u.Id == id and u.Label.Parent and (u.Label ~= CoverImage or CoverImage.Visible) then
+					u.Label.Image = tex
+				end
+			end
+		end
+	end
+end)
+
+ApplyFit()
+OpenUI()
